@@ -24,6 +24,7 @@ type Race struct {
 	LastPointAt time.Time
 	LiveUntil   *time.Time // nil = indefinite live period
 	FinishedAt  *time.Time // nil = still active
+	Public      bool       // visible to everyone, not only the owner
 }
 
 func (r *Race) Active() bool { return r.FinishedAt == nil }
@@ -38,7 +39,12 @@ type Store struct {
 	db *sql.DB
 }
 
-const schema = `
+// migrations[i] upgrades the schema from version i to i+1 (PRAGMA user_version).
+// Append new steps; never edit the ones already deployed.
+var migrations = []string{
+	// v1: initial schema. IF NOT EXISTS because databases created before
+	// versioning already have these tables at user_version 0.
+	`
 CREATE TABLE IF NOT EXISTS races (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id       INTEGER NOT NULL,
@@ -61,7 +67,10 @@ CREATE TABLE IF NOT EXISTS points (
   accuracy  REAL
 );
 CREATE INDEX IF NOT EXISTS points_race ON points(race_id, ts);
-`
+`,
+	// v2: race visibility.
+	`ALTER TABLE races ADD COLUMN public INTEGER NOT NULL DEFAULT 0`,
+}
 
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
@@ -76,16 +85,42 @@ func Open(path string) (*Store, error) {
 	}
 	// SQLite allows one writer at a time; a single connection avoids SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	for v := version; v < len(migrations); v++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("v%d: %w", v+1, err)
+		}
+		// PRAGMA does not accept placeholders; v is an int we control.
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
-const raceCols = `id, user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at`
+const raceCols = `id, user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at, public`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -95,7 +130,7 @@ func scanRace(row scanner) (*Race, error) {
 		started, last         int64
 		liveUntil, finishedAt sql.NullInt64
 	)
-	if err := row.Scan(&r.ID, &r.UserID, &r.ChatID, &r.MessageID, &started, &last, &liveUntil, &finishedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.UserID, &r.ChatID, &r.MessageID, &started, &last, &liveUntil, &finishedAt, &r.Public); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -182,6 +217,17 @@ func (s *Store) FinishRace(ctx context.Context, id int64, at time.Time) (bool, e
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+func (s *Store) SetPublic(ctx context.Context, id int64, public bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE races SET public = ? WHERE id = ?`, public, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // AddPoint appends a point and bumps the race's last_point_at.

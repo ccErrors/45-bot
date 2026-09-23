@@ -45,7 +45,7 @@ func (b *Bot) Run(ctx context.Context) error {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "edited_message"}
+	u.AllowedUpdates = []string{"message", "edited_message", "callback_query"}
 	updates := b.api.GetUpdatesChan(u)
 	for {
 		select {
@@ -65,6 +65,8 @@ func (b *Bot) handle(ctx context.Context, upd tgbotapi.Update) {
 		err = b.onLocationUpdate(ctx, upd.EditedMessage)
 	case upd.Message != nil && upd.Message.Location != nil:
 		err = b.onLocationStart(ctx, upd.Message)
+	case upd.CallbackQuery != nil:
+		err = b.onCallback(ctx, upd.CallbackQuery)
 	case upd.Message != nil && upd.Message.IsCommand():
 		// Rendering can take a while; don't block location updates of other users.
 		go func(m *tgbotapi.Message) {
@@ -233,7 +235,10 @@ const helpText = `Я записываю велозаезды 🚴
 3. Остановите трансляцию — заезд завершится.
 
 /races — список ваших заездов
-/race_<id> — карта заезда с треком`
+/race_<id> — карта заезда с треком
+
+Заезды по умолчанию приватные. Под картой есть кнопка «⚙️ Настройки» —
+там заезд можно сделать публичным, чтобы его открывал любой по /race_<id>.`
 
 func (b *Bot) cmdRaces(ctx context.Context, m *tgbotapi.Message) error {
 	races, err := b.store.ListRaces(ctx, m.From.ID, racesListLimit)
@@ -250,7 +255,11 @@ func (b *Bot) cmdRaces(ctx context.Context, m *tgbotapi.Message) error {
 		if !r.Active() {
 			end = b.fmtTime(r.LastPointAt)
 		}
-		fmt.Fprintf(&sb, "%s  %s — %s\n", raceCmd(r.ID), b.fmtTime(r.StartedAt), end)
+		mark := ""
+		if r.Public {
+			mark = "  🌐"
+		}
+		fmt.Fprintf(&sb, "%s  %s — %s%s\n", raceCmd(r.ID), b.fmtTime(r.StartedAt), end, mark)
 	}
 	b.reply(m.Chat.ID, sb.String())
 	return nil
@@ -298,15 +307,131 @@ func (b *Bot) cmdRace(ctx context.Context, m *tgbotapi.Message, hexID string) er
 	}
 	photo := tgbotapi.NewPhoto(m.Chat.ID, tgbotapi.FileBytes{Name: raceCmd(r.ID)[1:] + ".jpg", Bytes: buf.Bytes()})
 	photo.Caption = fmt.Sprintf("%s  %s — %s\n%s", raceCmd(r.ID), b.fmtTime(r.StartedAt), end, summary(st))
+	if canEdit(r, m.From.ID) {
+		photo.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⚙️ Настройки", callbackData(cbSettings, r.ID, "")),
+		))
+	}
 	_, err = b.api.Send(photo)
 	return err
 }
 
+// --- race settings (inline buttons) ---
+
+// Callback data: "<action>:<race hex id>[:<arg>]", well under Telegram's 64-byte limit.
+const (
+	cbSettings   = "set" // open the settings message
+	cbVisibility = "pub" // arg "1" = make public, "0" = make private
+)
+
+func callbackData(action string, raceID int64, arg string) string {
+	d := action + ":" + strconv.FormatInt(raceID, 16)
+	if arg != "" {
+		d += ":" + arg
+	}
+	return d
+}
+
+func parseCallback(data string) (action string, raceID int64, arg string, ok bool) {
+	parts := strings.SplitN(data, ":", 3)
+	if len(parts) < 2 {
+		return "", 0, "", false
+	}
+	id, err := strconv.ParseInt(parts[1], 16, 64)
+	if err != nil {
+		return "", 0, "", false
+	}
+	if len(parts) == 3 {
+		arg = parts[2]
+	}
+	return parts[0], id, arg, true
+}
+
+// settingsView renders the settings message for a race.
+func settingsView(r *storage.Race) (string, tgbotapi.InlineKeyboardMarkup) {
+	cmd := raceCmd(r.ID)
+	text := "⚙️ Настройки заезда " + cmd + "\n\nВидимость: "
+	var btn tgbotapi.InlineKeyboardButton
+	if r.Public {
+		text += "🌐 публичный — любой может открыть его командой " + cmd
+		btn = tgbotapi.NewInlineKeyboardButtonData("🔒 Сделать приватным", callbackData(cbVisibility, r.ID, "0"))
+	} else {
+		text += "🔒 приватный — виден только вам"
+		btn = tgbotapi.NewInlineKeyboardButtonData("🌐 Сделать публичным", callbackData(cbVisibility, r.ID, "1"))
+	}
+	return text, tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btn))
+}
+
+func (b *Bot) onCallback(ctx context.Context, q *tgbotapi.CallbackQuery) error {
+	// Telegram shows a spinner on the button until the callback is answered.
+	var toast string
+	defer func() {
+		if _, err := b.api.Request(tgbotapi.NewCallback(q.ID, toast)); err != nil {
+			log.Printf("answer callback: %v", err)
+		}
+	}()
+
+	action, id, arg, ok := parseCallback(q.Data)
+	if !ok || q.Message == nil || q.From == nil {
+		toast = "Кнопка устарела"
+		return nil
+	}
+	r, err := b.store.GetRace(ctx, id)
+	if errors.Is(err, storage.ErrNotFound) {
+		toast = "Заезд не найден"
+		return nil
+	}
+	if err != nil {
+		toast = "Ошибка, попробуйте позже"
+		return err
+	}
+	if !canEdit(r, q.From.ID) {
+		toast = "Настройки доступны только автору заезда"
+		return nil
+	}
+
+	chatID := q.Message.Chat.ID
+	switch action {
+	case cbSettings:
+		text, kb := settingsView(r)
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ReplyMarkup = kb
+		_, err := b.api.Send(msg)
+		return err
+
+	case cbVisibility:
+		public := arg == "1"
+		// The button carries the target state, so a repeated tap is a no-op.
+		if r.Public != public {
+			if err := b.store.SetPublic(ctx, r.ID, public); err != nil {
+				toast = "Ошибка, попробуйте позже"
+				return err
+			}
+			r.Public = public
+		}
+		toast = "Заезд теперь приватный"
+		if public {
+			toast = "Заезд теперь публичный"
+		}
+		text, kb := settingsView(r)
+		// Fails with "message is not modified" on a repeated tap; harmless.
+		b.api.Request(tgbotapi.NewEditMessageTextAndMarkup(chatID, q.Message.MessageID, text, kb))
+		return nil
+	}
+	toast = "Кнопка устарела"
+	return nil
+}
+
 // --- helpers ---
 
-// canView is the single access check for opening a race.
-// For now only the owner may see it; sharing rules will extend this later.
+// canView is the single access check for opening a race:
+// the owner always, anyone else only if the race is public.
 func canView(r *storage.Race, userID int64) bool {
+	return r.UserID == userID || r.Public
+}
+
+// canEdit guards race settings: owner only.
+func canEdit(r *storage.Race, userID int64) bool {
 	return r.UserID == userID
 }
 

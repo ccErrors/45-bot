@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,5 +50,56 @@ func TestRaceLifecycle(t *testing.T) {
 	}
 	if other, _ := s.ListRaces(ctx, 8, 10); len(other) != 0 {
 		t.Fatal("other user sees races")
+	}
+}
+
+// A database created before schema versioning (user_version 0, no public column)
+// must be upgraded in place without losing races.
+func TestMigrateLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO races (user_id, chat_id, message_id, started_at, last_point_at) VALUES (1, 1, 1, 100, 200)`); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	r, err := s.GetRace(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Public {
+		t.Fatal("legacy race must stay private")
+	}
+	if err := s.SetPublic(ctx, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.GetRace(ctx, 1); !r.Public {
+		t.Fatal("SetPublic did not persist")
+	}
+	if err := s.SetPublic(ctx, 99, true); err != ErrNotFound {
+		t.Fatalf("SetPublic on missing race: %v", err)
+	}
+
+	// Reopening an up-to-date DB is a no-op.
+	s.Close()
+	if s, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	var v int
+	s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if v != len(migrations) {
+		t.Fatalf("user_version %d, want %d", v, len(migrations))
 	}
 }
