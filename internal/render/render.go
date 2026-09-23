@@ -107,7 +107,7 @@ func Render(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st ge
 	}
 
 	fontSize := math.Max(14, big/60)
-	drawStats(dc, st, len(nonEmpty), fontSize)
+	drawStats(dc, st, fontSize)
 	drawAttribution(dc, math.Max(11, fontSize*0.45))
 	return dc.Image(), nil
 }
@@ -212,15 +212,11 @@ func drawMarkers(dc *gg.Context, f Frame, start, finish geo.Point, lineW float64
 	marker(finish, color.RGBA{20, 20, 20, 255})
 }
 
-func drawStats(dc *gg.Context, st geo.Stats, tracks int, size float64) {
-	var lines []string
-	if tracks > 1 {
-		lines = append(lines, fmt.Sprintf("Заездов: %d", tracks))
-	}
-	lines = append(lines,
+func drawStats(dc *gg.Context, st geo.Stats, size float64) {
+	lines := []string{
 		fmt.Sprintf("Дистанция: %.2f км", st.DistanceM/1000),
 		fmt.Sprintf("Макс. скорость: %.1f км/ч", st.MaxSpeedKmh),
-	)
+	}
 	pad := size * 0.6
 	lineH := size * 1.35
 	textFace := face(fontBold, size)
