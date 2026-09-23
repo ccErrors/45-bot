@@ -2,15 +2,12 @@
 package bot
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"image/jpeg"
 	"log"
 	"math"
 	"strconv"
-	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -27,6 +24,7 @@ const (
 	liveGrace            = 5 * time.Minute
 	racesListLimit       = 50
 	dateLayout           = "02.01.2006 15:04"
+	shortDateLayout      = "02.01 15:04"
 )
 
 type Bot struct {
@@ -42,6 +40,9 @@ func New(api *tgbotapi.BotAPI, store *storage.Store, tiles render.TileSource, cf
 
 func (b *Bot) Run(ctx context.Context) error {
 	go b.janitor(ctx)
+	if _, err := b.api.Request(tgbotapi.NewSetMyCommands(menuCommands...)); err != nil {
+		log.Printf("set commands menu: %v", err)
+	}
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -66,7 +67,12 @@ func (b *Bot) handle(ctx context.Context, upd tgbotapi.Update) {
 	case upd.Message != nil && upd.Message.Location != nil:
 		err = b.onLocationStart(ctx, upd.Message)
 	case upd.CallbackQuery != nil:
-		err = b.onCallback(ctx, upd.CallbackQuery)
+		// Some buttons render a map; don't block location updates meanwhile.
+		go func(q *tgbotapi.CallbackQuery) {
+			if err := b.onCallback(ctx, q); err != nil {
+				log.Printf("callback %q: %v", q.Data, err)
+			}
+		}(upd.CallbackQuery)
 	case upd.Message != nil && upd.Message.IsCommand():
 		// Rendering can take a while; don't block location updates of other users.
 		go func(m *tgbotapi.Message) {
@@ -207,233 +213,7 @@ func (b *Bot) finish(ctx context.Context, r *storage.Race, reason string) {
 	b.reply(r.ChatID, msg)
 }
 
-// --- commands ---
-
-func (b *Bot) onCommand(ctx context.Context, m *tgbotapi.Message) error {
-	if m.From == nil {
-		return nil
-	}
-	cmd := m.Command()
-	switch {
-	case cmd == "start" || cmd == "help":
-		b.reply(m.Chat.ID, helpText)
-		return nil
-	case cmd == "races":
-		return b.cmdRaces(ctx, m)
-	case strings.HasPrefix(cmd, "race_"):
-		return b.cmdRace(ctx, m, strings.TrimPrefix(cmd, "race_"))
-	default:
-		b.reply(m.Chat.ID, "Не знаю такой команды. /help")
-		return nil
-	}
-}
-
-const helpText = `Я записываю велозаезды 🚴
-
-1. Нажмите 📎 → Геопозиция → «Транслировать геопозицию» и выберите срок.
-2. Катайтесь — я сохраняю точки трека.
-3. Остановите трансляцию — заезд завершится.
-
-/races — список ваших заездов
-/race_<id> — карта заезда с треком
-
-Заезды по умолчанию приватные. Под картой есть кнопка «⚙️ Настройки» —
-там заезд можно сделать публичным, чтобы его открывал любой по /race_<id>.`
-
-func (b *Bot) cmdRaces(ctx context.Context, m *tgbotapi.Message) error {
-	races, err := b.store.ListRaces(ctx, m.From.ID, racesListLimit)
-	if err != nil {
-		return err
-	}
-	if len(races) == 0 {
-		b.reply(m.Chat.ID, "Заездов пока нет. Начните трансляцию геопозиции, чтобы записать первый.")
-		return nil
-	}
-	var sb strings.Builder
-	for _, r := range races {
-		end := "идёт"
-		if !r.Active() {
-			end = b.fmtTime(r.LastPointAt)
-		}
-		mark := ""
-		if r.Public {
-			mark = "  🌐"
-		}
-		fmt.Fprintf(&sb, "%s  %s — %s%s\n", raceCmd(r.ID), b.fmtTime(r.StartedAt), end, mark)
-	}
-	b.reply(m.Chat.ID, sb.String())
-	return nil
-}
-
-func (b *Bot) cmdRace(ctx context.Context, m *tgbotapi.Message, hexID string) error {
-	id, err := strconv.ParseInt(hexID, 16, 64)
-	if err != nil {
-		b.reply(m.Chat.ID, "Неверный id заезда. Список: /races")
-		return nil
-	}
-	r, err := b.store.GetRace(ctx, id)
-	if errors.Is(err, storage.ErrNotFound) || (err == nil && !canView(r, m.From.ID)) {
-		b.reply(m.Chat.ID, "Заезд не найден. Список: /races")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	pts, err := b.points(ctx, r.ID)
-	if err != nil {
-		return err
-	}
-	segs, st := geo.Analyze(pts, b.cfg.MaxSpeedKmh)
-	if len(segs) == 0 {
-		b.reply(m.Chat.ID, "Слишком мало точек для построения трека.")
-		return nil
-	}
-
-	b.api.Request(tgbotapi.NewChatAction(m.Chat.ID, tgbotapi.ChatUploadPhoto))
-	rctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	img, err := render.Render(rctx, b.tiles, segs, st, render.DefaultFrameOptions)
-	if err != nil {
-		return err
-	}
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
-		return err
-	}
-
-	end := "идёт"
-	if !r.Active() {
-		end = b.fmtTime(r.LastPointAt)
-	}
-	photo := tgbotapi.NewPhoto(m.Chat.ID, tgbotapi.FileBytes{Name: raceCmd(r.ID)[1:] + ".jpg", Bytes: buf.Bytes()})
-	photo.Caption = fmt.Sprintf("%s  %s — %s\n%s", raceCmd(r.ID), b.fmtTime(r.StartedAt), end, summary(st))
-	if canEdit(r, m.From.ID) {
-		photo.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("⚙️ Настройки", callbackData(cbSettings, r.ID, "")),
-		))
-	}
-	_, err = b.api.Send(photo)
-	return err
-}
-
-// --- race settings (inline buttons) ---
-
-// Callback data: "<action>:<race hex id>[:<arg>]", well under Telegram's 64-byte limit.
-const (
-	cbSettings   = "set" // open the settings message
-	cbVisibility = "pub" // arg "1" = make public, "0" = make private
-)
-
-func callbackData(action string, raceID int64, arg string) string {
-	d := action + ":" + strconv.FormatInt(raceID, 16)
-	if arg != "" {
-		d += ":" + arg
-	}
-	return d
-}
-
-func parseCallback(data string) (action string, raceID int64, arg string, ok bool) {
-	parts := strings.SplitN(data, ":", 3)
-	if len(parts) < 2 {
-		return "", 0, "", false
-	}
-	id, err := strconv.ParseInt(parts[1], 16, 64)
-	if err != nil {
-		return "", 0, "", false
-	}
-	if len(parts) == 3 {
-		arg = parts[2]
-	}
-	return parts[0], id, arg, true
-}
-
-// settingsView renders the settings message for a race.
-func settingsView(r *storage.Race) (string, tgbotapi.InlineKeyboardMarkup) {
-	cmd := raceCmd(r.ID)
-	text := "⚙️ Настройки заезда " + cmd + "\n\nВидимость: "
-	var btn tgbotapi.InlineKeyboardButton
-	if r.Public {
-		text += "🌐 публичный — любой может открыть его командой " + cmd
-		btn = tgbotapi.NewInlineKeyboardButtonData("🔒 Сделать приватным", callbackData(cbVisibility, r.ID, "0"))
-	} else {
-		text += "🔒 приватный — виден только вам"
-		btn = tgbotapi.NewInlineKeyboardButtonData("🌐 Сделать публичным", callbackData(cbVisibility, r.ID, "1"))
-	}
-	return text, tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btn))
-}
-
-func (b *Bot) onCallback(ctx context.Context, q *tgbotapi.CallbackQuery) error {
-	// Telegram shows a spinner on the button until the callback is answered.
-	var toast string
-	defer func() {
-		if _, err := b.api.Request(tgbotapi.NewCallback(q.ID, toast)); err != nil {
-			log.Printf("answer callback: %v", err)
-		}
-	}()
-
-	action, id, arg, ok := parseCallback(q.Data)
-	if !ok || q.Message == nil || q.From == nil {
-		toast = "Кнопка устарела"
-		return nil
-	}
-	r, err := b.store.GetRace(ctx, id)
-	if errors.Is(err, storage.ErrNotFound) {
-		toast = "Заезд не найден"
-		return nil
-	}
-	if err != nil {
-		toast = "Ошибка, попробуйте позже"
-		return err
-	}
-	if !canEdit(r, q.From.ID) {
-		toast = "Настройки доступны только автору заезда"
-		return nil
-	}
-
-	chatID := q.Message.Chat.ID
-	switch action {
-	case cbSettings:
-		text, kb := settingsView(r)
-		msg := tgbotapi.NewMessage(chatID, text)
-		msg.ReplyMarkup = kb
-		_, err := b.api.Send(msg)
-		return err
-
-	case cbVisibility:
-		public := arg == "1"
-		// The button carries the target state, so a repeated tap is a no-op.
-		if r.Public != public {
-			if err := b.store.SetPublic(ctx, r.ID, public); err != nil {
-				toast = "Ошибка, попробуйте позже"
-				return err
-			}
-			r.Public = public
-		}
-		toast = "Заезд теперь приватный"
-		if public {
-			toast = "Заезд теперь публичный"
-		}
-		text, kb := settingsView(r)
-		// Fails with "message is not modified" on a repeated tap; harmless.
-		b.api.Request(tgbotapi.NewEditMessageTextAndMarkup(chatID, q.Message.MessageID, text, kb))
-		return nil
-	}
-	toast = "Кнопка устарела"
-	return nil
-}
-
 // --- helpers ---
-
-// canView is the single access check for opening a race:
-// the owner always, anyone else only if the race is public.
-func canView(r *storage.Race, userID int64) bool {
-	return r.UserID == userID || r.Public
-}
-
-// canEdit guards race settings: owner only.
-func canEdit(r *storage.Race, userID int64) bool {
-	return r.UserID == userID
-}
 
 func (b *Bot) points(ctx context.Context, raceID int64) ([]geo.Point, error) {
 	sp, err := b.store.Points(ctx, raceID)
@@ -455,7 +235,24 @@ func (b *Bot) reply(chatID int64, text string) {
 
 func (b *Bot) fmtTime(t time.Time) string { return t.In(b.cfg.Location).Format(dateLayout) }
 
+func (b *Bot) fmtShort(t time.Time) string { return t.In(b.cfg.Location).Format(shortDateLayout) }
+
 func raceCmd(id int64) string { return "/race_" + strconv.FormatInt(id, 16) }
+
+func aggCmd(id int64) string { return "/agr_" + strconv.FormatInt(id, 16) }
+
+// pluralRaces returns "1 заезд", "3 заезда", "5 заездов".
+func pluralRaces(n int) string {
+	word := "заездов"
+	switch {
+	case n%100 >= 11 && n%100 <= 14:
+	case n%10 == 1:
+		word = "заезд"
+	case n%10 >= 2 && n%10 <= 4:
+		word = "заезда"
+	}
+	return fmt.Sprintf("%d %s", n, word)
+}
 
 func summary(st geo.Stats) string {
 	return fmt.Sprintf("Дистанция: %.2f км · Время: %s · Макс.: %.1f км/ч",

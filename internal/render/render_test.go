@@ -86,7 +86,7 @@ func (flatTiles) Tile(context.Context, int, int, int) (image.Image, error) {
 func TestRender(t *testing.T) {
 	pts := track([2]float64{55.70, 37.55}, [2]float64{55.78, 37.70}, [2]float64{55.74, 37.62})
 	segs, st := geo.Analyze(pts, 0)
-	img, err := Render(context.Background(), flatTiles{}, segs, st, DefaultFrameOptions)
+	img, err := Render(context.Background(), flatTiles{}, [][]geo.Segment{segs}, st, DefaultFrameOptions)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,12 +42,9 @@ type Stats struct {
 // or if reaching it would require more than maxSpeedKmh (a GPS glitch);
 // maxSpeedKmh <= 0 disables the glitch filter.
 func Analyze(pts []Point, maxSpeedKmh float64) ([]Segment, Stats) {
-	var (
-		segs []Segment
-		st   Stats
-	)
+	var segs []Segment
 	if len(pts) == 0 {
-		return nil, st
+		return nil, Stats{}
 	}
 	a := pts[0]
 	for _, b := range pts[1:] {
@@ -60,18 +57,34 @@ func Analyze(pts []Point, maxSpeedKmh float64) ([]Segment, Stats) {
 		if maxSpeedKmh > 0 && v > maxSpeedKmh {
 			continue
 		}
-		if len(segs) == 0 || v < st.MinSpeedKmh {
-			st.MinSpeedKmh = v
-		}
-		if len(segs) == 0 || v > st.MaxSpeedKmh {
-			st.MaxSpeedKmh = v
-		}
 		segs = append(segs, Segment{From: a, To: b, DistanceM: d, SpeedKmh: v})
-		st.DistanceM += d
 		a = b
 	}
-	if len(segs) > 0 {
-		st.Duration = segs[len(segs)-1].To.Time.Sub(segs[0].From.Time)
+	return segs, Combine(segs)
+}
+
+// Combine computes statistics over several tracks: distance and duration are
+// summed, the speed range spans all segments. Empty tracks are ignored.
+func Combine(tracks ...[]Segment) Stats {
+	var (
+		st    Stats
+		first = true
+	)
+	for _, segs := range tracks {
+		if len(segs) == 0 {
+			continue
+		}
+		st.Duration += segs[len(segs)-1].To.Time.Sub(segs[0].From.Time)
+		for _, s := range segs {
+			st.DistanceM += s.DistanceM
+			if first || s.SpeedKmh < st.MinSpeedKmh {
+				st.MinSpeedKmh = s.SpeedKmh
+			}
+			if first || s.SpeedKmh > st.MaxSpeedKmh {
+				st.MaxSpeedKmh = s.SpeedKmh
+			}
+			first = false
+		}
 	}
-	return segs, st
+	return st
 }

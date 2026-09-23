@@ -64,15 +64,26 @@ func hsv(h, s, v float64) color.RGBA {
 	return color.RGBA{uint8((r + m) * 255), uint8((g + m) * 255), uint8((b + m) * 255), 255}
 }
 
-// Render draws the track segments (as returned by geo.Analyze) and their stats.
-func Render(ctx context.Context, tiles TileSource, segs []geo.Segment, st geo.Stats, opt FrameOptions) (image.Image, error) {
-	if len(segs) == 0 {
-		return nil, fmt.Errorf("empty track")
+// Render draws one or more tracks (segments as returned by geo.Analyze) on a
+// single map. st must cover all tracks (geo.Combine): it sets the shared color
+// scale and the numbers in the stats panel. Empty tracks are skipped.
+func Render(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st geo.Stats, opt FrameOptions) (image.Image, error) {
+	var (
+		pts      []geo.Point
+		nonEmpty [][]geo.Segment
+	)
+	for _, segs := range tracks {
+		if len(segs) == 0 {
+			continue
+		}
+		nonEmpty = append(nonEmpty, segs)
+		pts = append(pts, segs[0].From)
+		for _, s := range segs {
+			pts = append(pts, s.To)
+		}
 	}
-	pts := make([]geo.Point, 0, len(segs)+1)
-	pts = append(pts, segs[0].From)
-	for _, s := range segs {
-		pts = append(pts, s.To)
+	if len(nonEmpty) == 0 {
+		return nil, fmt.Errorf("empty track")
 	}
 	f := ComputeFrame(pts, opt)
 	dc := gg.NewContext(f.Width, f.Height)
@@ -85,11 +96,18 @@ func Render(ctx context.Context, tiles TileSource, segs []geo.Segment, st geo.St
 
 	big := float64(max(f.Width, f.Height))
 	lineW := math.Max(3, big/300)
-	drawTrack(dc, f, segs, st, lineW)
-	drawMarkers(dc, f, pts, lineW)
+	for _, segs := range nonEmpty {
+		drawHalo(dc, f, segs, lineW)
+	}
+	for _, segs := range nonEmpty {
+		drawTrack(dc, f, segs, st, lineW)
+	}
+	for _, segs := range nonEmpty {
+		drawMarkers(dc, f, segs[0].From, segs[len(segs)-1].To, lineW)
+	}
 
 	fontSize := math.Max(14, big/60)
-	drawStats(dc, st, fontSize)
+	drawStats(dc, st, len(nonEmpty), fontSize)
 	drawAttribution(dc, math.Max(11, fontSize*0.45))
 	return dc.Image(), nil
 }
@@ -146,11 +164,11 @@ func drawTiles(ctx context.Context, dc *gg.Context, tiles TileSource, f Frame) e
 	return nil
 }
 
-func drawTrack(dc *gg.Context, f Frame, segs []geo.Segment, st geo.Stats, lineW float64) {
+// drawHalo draws a dark outline under a track so light colors stay visible on the map.
+// Halos of all tracks go first, so overlapping tracks don't cover each other's colors.
+func drawHalo(dc *gg.Context, f Frame, segs []geo.Segment, lineW float64) {
 	dc.SetLineCapRound()
 	dc.SetLineJoinRound()
-
-	// Dark halo under the whole track so light colors stay visible on the map.
 	for _, s := range segs {
 		x1, y1 := f.Project(s.From.Lat, s.From.Lon)
 		x2, y2 := f.Project(s.To.Lat, s.To.Lon)
@@ -159,7 +177,11 @@ func drawTrack(dc *gg.Context, f Frame, segs []geo.Segment, st geo.Stats, lineW 
 	dc.SetRGBA(0, 0, 0, 0.55)
 	dc.SetLineWidth(lineW + math.Max(2, lineW*0.6))
 	dc.Stroke()
+}
 
+func drawTrack(dc *gg.Context, f Frame, segs []geo.Segment, st geo.Stats, lineW float64) {
+	dc.SetLineCapRound()
+	dc.SetLineJoinRound()
 	span := st.MaxSpeedKmh - st.MinSpeedKmh
 	dc.SetLineWidth(lineW)
 	for _, s := range segs {
@@ -175,7 +197,7 @@ func drawTrack(dc *gg.Context, f Frame, segs []geo.Segment, st geo.Stats, lineW 
 	}
 }
 
-func drawMarkers(dc *gg.Context, f Frame, pts []geo.Point, lineW float64) {
+func drawMarkers(dc *gg.Context, f Frame, start, finish geo.Point, lineW float64) {
 	r := lineW * 1.6
 	marker := func(p geo.Point, fill color.Color) {
 		x, y := f.Project(p.Lat, p.Lon)
@@ -186,15 +208,19 @@ func drawMarkers(dc *gg.Context, f Frame, pts []geo.Point, lineW float64) {
 		dc.SetLineWidth(math.Max(2, lineW*0.5))
 		dc.Stroke()
 	}
-	marker(pts[0], color.RGBA{30, 170, 60, 255})
-	marker(pts[len(pts)-1], color.RGBA{20, 20, 20, 255})
+	marker(start, color.RGBA{30, 170, 60, 255})
+	marker(finish, color.RGBA{20, 20, 20, 255})
 }
 
-func drawStats(dc *gg.Context, st geo.Stats, size float64) {
-	lines := []string{
+func drawStats(dc *gg.Context, st geo.Stats, tracks int, size float64) {
+	var lines []string
+	if tracks > 1 {
+		lines = append(lines, fmt.Sprintf("Заездов: %d", tracks))
+	}
+	lines = append(lines,
 		fmt.Sprintf("Дистанция: %.2f км", st.DistanceM/1000),
 		fmt.Sprintf("Макс. скорость: %.1f км/ч", st.MaxSpeedKmh),
-	}
+	)
 	pad := size * 0.6
 	lineH := size * 1.35
 	textFace := face(fontBold, size)

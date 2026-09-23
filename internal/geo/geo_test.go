@@ -42,3 +42,16 @@ func TestAnalyze(t *testing.T) {
 		t.Fatalf("duration: %s", st.Duration)
 	}
 }
+
+func TestCombine(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	a, _ := Analyze([]Point{{Lat: 55, Lon: 37, Time: t0}, {Lat: 55.001, Lon: 37, Time: t0.Add(20 * time.Second)}}, 0) // ~20 km/h
+	b, _ := Analyze([]Point{{Lat: 56, Lon: 37, Time: t0}, {Lat: 56.001, Lon: 37, Time: t0.Add(10 * time.Second)}}, 0) // ~40 km/h
+	st := Combine(a, nil, b)
+	if math.Abs(st.MinSpeedKmh-20) > 0.5 || math.Abs(st.MaxSpeedKmh-40) > 0.5 {
+		t.Fatalf("speeds %.1f..%.1f", st.MinSpeedKmh, st.MaxSpeedKmh)
+	}
+	if math.Abs(st.DistanceM-222.4) > 1 || st.Duration != 30*time.Second {
+		t.Fatalf("distance %.1f, duration %s", st.DistanceM, st.Duration)
+	}
+}

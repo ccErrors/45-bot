@@ -35,7 +35,7 @@ func TestRenderRide(t *testing.T) {
 		t.Errorf("speeds %.1f..%.1f km/h", st.MinSpeedKmh, st.MaxSpeedKmh)
 	}
 
-	img, err := Render(context.Background(), flatTiles{}, segs, st, DefaultFrameOptions)
+	img, err := Render(context.Background(), flatTiles{}, [][]geo.Segment{segs}, st, DefaultFrameOptions)
 	if err != nil {
 		t.Fatal(err)
 	}

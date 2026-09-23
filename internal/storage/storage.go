@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -70,6 +71,22 @@ CREATE INDEX IF NOT EXISTS points_race ON points(race_id, ts);
 `,
 	// v2: race visibility.
 	`ALTER TABLE races ADD COLUMN public INTEGER NOT NULL DEFAULT 0`,
+	// v3: aggregations — named groups of a user's races drawn on one map.
+	`
+CREATE TABLE aggregations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX aggregations_user ON aggregations(user_id, id DESC);
+
+CREATE TABLE aggregation_races (
+  aggregation_id INTEGER NOT NULL REFERENCES aggregations(id) ON DELETE CASCADE,
+  race_id        INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+  PRIMARY KEY (aggregation_id, race_id)
+);
+CREATE INDEX aggregation_races_race ON aggregation_races(race_id);
+`,
 }
 
 func Open(path string) (*Store, error) {
@@ -121,6 +138,15 @@ func migrate(db *sql.DB) error {
 func (s *Store) Close() error { return s.db.Close() }
 
 const raceCols = `id, user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at, public`
+
+// prefixed qualifies each column of a comma-separated list with a table alias.
+func prefixed(alias, cols string) string {
+	parts := strings.Split(cols, ", ")
+	for i, c := range parts {
+		parts[i] = alias + c
+	}
+	return strings.Join(parts, ", ")
+}
 
 type scanner interface{ Scan(dest ...any) error }
 

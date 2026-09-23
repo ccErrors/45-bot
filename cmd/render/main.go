@@ -3,6 +3,7 @@
 //
 //	go run ./cmd/render -race 1a -o race.png                     # from the bot's DB
 //	go run ./cmd/render -csv testdata/ride.csv -o race.png       # lat,lon,unix_ts per line
+//	go run ./cmd/render -csv a.csv,b.csv -o agg.png              # several tracks on one map (aggregation)
 //	go run ./cmd/render -csv testdata/ride.csv -seed-user 12345  # save as a race of Telegram user 12345
 package main
 
@@ -14,6 +15,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ccErrors/race-bot/internal/geo"
@@ -24,43 +26,58 @@ import (
 func main() {
 	dbPath := flag.String("db", "data/bot.db", "SQLite database path")
 	raceHex := flag.String("race", "", "race id (hex) to render from the database")
-	csvPath := flag.String("csv", "", "CSV track file: lat,lon,unix_ts")
+	csvPath := flag.String("csv", "", "CSV track file(s), comma-separated: lat,lon,unix_ts")
 	seedUser := flag.Int64("seed-user", 0, "with -csv: store the track as a finished race of this Telegram user id and exit")
 	out := flag.String("o", "race.png", "output PNG file")
 	cacheDir := flag.String("tiles", "data/tiles", "tile cache dir")
 	maxSpeed := flag.Float64("max-speed", 120, "glitch speed threshold, km/h")
 	flag.Parse()
 
-	var (
-		pts []geo.Point
-		err error
-	)
+	var tracks [][]geo.Point
 	switch {
 	case *csvPath != "":
-		pts, err = readCSV(*csvPath)
+		for _, p := range strings.Split(*csvPath, ",") {
+			pts, err := readCSV(p)
+			if err != nil {
+				log.Fatalf("%s: %v", p, err)
+			}
+			tracks = append(tracks, pts)
+		}
 	case *raceHex != "":
-		pts, err = readDB(*dbPath, *raceHex)
+		pts, err := readDB(*dbPath, *raceHex)
+		if err != nil {
+			log.Fatal(err)
+		}
+		tracks = append(tracks, pts)
 	default:
 		flag.Usage()
 		os.Exit(2)
-	}
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	if *seedUser != 0 {
 		if *csvPath == "" {
 			log.Fatal("-seed-user requires -csv")
 		}
-		id, err := seed(*dbPath, *seedUser, pts)
-		if err != nil {
-			log.Fatal(err)
+		for _, pts := range tracks {
+			id, err := seed(*dbPath, *seedUser, pts)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("saved %d points as /race_%x for user %d\n", len(pts), id, *seedUser)
 		}
-		fmt.Printf("saved %d points as /race_%x for user %d\n", len(pts), id, *seedUser)
 		return
 	}
 
-	segs, st := geo.Analyze(pts, *maxSpeed)
+	var (
+		segs   [][]geo.Segment
+		points int
+	)
+	for _, pts := range tracks {
+		s, _ := geo.Analyze(pts, *maxSpeed)
+		segs = append(segs, s)
+		points += len(pts)
+	}
+	st := geo.Combine(segs...)
 	tiles := render.NewHTTPTiles("https://tile.openstreetmap.org/{z}/{x}/{y}.png", "race-bot/1.0 (render cli)", *cacheDir)
 	start := time.Now()
 	img, err := render.Render(context.Background(), tiles, segs, st, render.DefaultFrameOptions)
@@ -78,8 +95,8 @@ func main() {
 		log.Fatal(err)
 	}
 	b := img.Bounds()
-	fmt.Printf("%s: %dx%d, %d points (%d segments), %.2f km, max %.1f km/h, rendered in %s\n",
-		*out, b.Dx(), b.Dy(), len(pts), len(segs), st.DistanceM/1000, st.MaxSpeedKmh, time.Since(start).Round(time.Millisecond))
+	fmt.Printf("%s: %dx%d, %d track(s), %d points, %.2f km, %.1f..%.1f km/h, rendered in %s\n",
+		*out, b.Dx(), b.Dy(), len(tracks), points, st.DistanceM/1000, st.MinSpeedKmh, st.MaxSpeedKmh, time.Since(start).Round(time.Millisecond))
 }
 
 func readCSV(path string) ([]geo.Point, error) {
