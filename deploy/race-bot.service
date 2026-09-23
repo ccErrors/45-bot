@@ -1,0 +1,13 @@
+# systemd user unit: installed to ~/.config/systemd/user/ by deploy.sh.
+[Unit]
+Description=race-bot Telegram bot
+
+[Service]
+WorkingDirectory=%h/race-bot
+EnvironmentFile=%h/race-bot/env
+ExecStart=%h/race-bot/race-bot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

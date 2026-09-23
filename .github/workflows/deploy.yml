@@ -1,0 +1,63 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one deploy at a time; never cancel one halfway through.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/key"
+
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_ARCH: ${{ vars.DEPLOY_ARCH }}
+          DEPLOY_SSH_KEY_FILE: ${{ runner.temp }}/ssh/key
+          DEPLOY_KNOWN_HOSTS_FILE: ${{ runner.temp }}/ssh/known_hosts
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TILE_USER_AGENT: ${{ vars.TILE_USER_AGENT }}
+          TILE_URL: ${{ vars.TILE_URL }}
+          TZ: ${{ vars.TZ }}
+          IDLE_TIMEOUT: ${{ vars.IDLE_TIMEOUT }}
+          MAX_ACCURACY_M: ${{ vars.MAX_ACCURACY_M }}
+          MAX_SPEED_KMH: ${{ vars.MAX_SPEED_KMH }}
+        run: ./deploy/deploy.sh
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"

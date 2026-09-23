@@ -1,0 +1,7 @@
+data/
+*.png
+/bot
+# deploy keys — never commit
+race-bot-deploy
+race-bot-deploy.pub
+known_hosts
