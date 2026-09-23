@@ -60,6 +60,9 @@ func TestSettingsViewToggles(t *testing.T) {
 	if !strings.Contains(text, "приватный") || *btn.CallbackData != "pub:1a:1" {
 		t.Fatalf("private view: %q / %q", text, *btn.CallbackData)
 	}
+	if d := *kb.InlineKeyboard[1][0].CallbackData; d != "rdel:1a" {
+		t.Fatalf("delete button: %q", d)
+	}
 	r.Public = true
 	text, kb = settingsView(r)
 	btn = kb.InlineKeyboard[0][0]
@@ -111,5 +114,30 @@ func TestAggSettingsView(t *testing.T) {
 	}
 	if d := *kb.InlineKeyboard[3][0].CallbackData; d != "adel:3" {
 		t.Fatalf("delete button: %q", d)
+	}
+}
+
+func TestDeleteConfirmView(t *testing.T) {
+	b := &Bot{cfg: &config.Config{Location: time.UTC}}
+	t0 := time.Unix(1_700_000_000, 0)
+	fin := t0.Add(time.Hour)
+	r := &storage.Race{ID: 0x1a, StartedAt: t0, LastPointAt: fin, FinishedAt: &fin}
+	aggs := []storage.AggregationSummary{
+		{Aggregation: storage.Aggregation{ID: 1}, Races: 2},
+		{Aggregation: storage.Aggregation{ID: 2}, Races: 3},
+	}
+	text, kb := b.deleteConfirmView(r, aggs)
+	if !strings.Contains(text, "уберётся из агрегаций: /agr_2") || !strings.Contains(text, "В агрегациях /agr_1 останется меньше 2") {
+		t.Fatalf("text: %q", text)
+	}
+	if strings.Contains(text, "записывается") {
+		t.Fatal("finished race shown as active")
+	}
+	yes, no := *kb.InlineKeyboard[0][0].CallbackData, *kb.InlineKeyboard[0][1].CallbackData
+	if yes != "rdely:1a" || no != "sback:1a" {
+		t.Fatalf("buttons %q %q", yes, no)
+	}
+	if text, _ := b.deleteConfirmView(r, nil); strings.Contains(text, "агрегац") {
+		t.Fatalf("no aggregations, text: %q", text)
 	}
 }

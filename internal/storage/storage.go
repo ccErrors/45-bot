@@ -325,6 +325,50 @@ func (s *Store) SetPublic(ctx context.Context, id int64, public bool) error {
 	return nil
 }
 
+// DeleteRace removes the race with its points. Aggregations that would be left
+// with fewer than 2 races are deleted too; their ids are returned.
+func (s *Store) DeleteRace(ctx context.Context, id int64) (deletedAggs []int64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT aggregation_id FROM aggregation_races
+		WHERE aggregation_id IN (SELECT aggregation_id FROM aggregation_races WHERE race_id = ?)
+		GROUP BY aggregation_id HAVING COUNT(*) <= 2
+		ORDER BY aggregation_id`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var aggID int64
+		if err := rows.Scan(&aggID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		deletedAggs = append(deletedAggs, aggID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, aggID := range deletedAggs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM aggregations WHERE id = ?`, aggID); err != nil {
+			return nil, err
+		}
+	}
+	// points and aggregation_races go with it (ON DELETE CASCADE).
+	res, err := tx.ExecContext(ctx, `DELETE FROM races WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrNotFound
+	}
+	return deletedAggs, tx.Commit()
+}
+
 // AddPoint appends a point and bumps the race's last_point_at.
 func (s *Store) AddPoint(ctx context.Context, raceID int64, p Point) error {
 	tx, err := s.db.BeginTx(ctx, nil)

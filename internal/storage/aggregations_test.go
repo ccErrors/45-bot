@@ -107,3 +107,56 @@ func ids(rs []*Race) string {
 	}
 	return strings.Join(parts, ",")
 }
+
+func TestDeleteRace(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	t0 := time.Unix(1_700_000_000, 0)
+	var ids []int64
+	for i := range 3 {
+		r := &Race{UserID: 1, ChatID: 1, MessageID: i + 1, StartedAt: t0.Add(time.Duration(i) * time.Hour), LastPointAt: t0}
+		if err := s.CreateRace(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		s.AddPoint(ctx, r.ID, Point{Lat: 55, Lon: 37, Time: t0})
+		ids = append(ids, r.ID)
+	}
+	pair, _ := s.CreateAggregation(ctx, 1, []int64{ids[0], ids[1]})           // left with 1 race → deleted
+	triple, _ := s.CreateAggregation(ctx, 1, []int64{ids[0], ids[1], ids[2]}) // left with 2 → kept
+	other, _ := s.CreateAggregation(ctx, 1, []int64{ids[1], ids[2]})          // not affected
+
+	aggs, err := s.RaceAggregations(ctx, ids[0])
+	if err != nil || len(aggs) != 2 || aggs[0].ID != pair || aggs[0].Races != 2 || aggs[1].Races != 3 {
+		t.Fatalf("race aggregations: %+v %v", aggs, err)
+	}
+
+	deleted, err := s.DeleteRace(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != pair {
+		t.Fatalf("deleted aggregations: %v", deleted)
+	}
+	if _, err := s.GetRace(ctx, ids[0]); err != ErrNotFound {
+		t.Fatalf("race still there: %v", err)
+	}
+	if p, _ := s.Points(ctx, ids[0]); len(p) != 0 {
+		t.Fatal("points must be deleted with the race")
+	}
+	if _, err := s.GetAggregation(ctx, pair); err != ErrNotFound {
+		t.Fatal("aggregation left with one race must be deleted")
+	}
+	if got, _ := s.AggregationRaces(ctx, triple); len(got) != 2 {
+		t.Fatalf("triple now has %d races", len(got))
+	}
+	if got, _ := s.AggregationRaces(ctx, other); len(got) != 2 {
+		t.Fatal("unrelated aggregation changed")
+	}
+	if _, err := s.DeleteRace(ctx, ids[0]); err != ErrNotFound {
+		t.Fatalf("second delete: %v", err)
+	}
+}

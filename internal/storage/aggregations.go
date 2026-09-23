@@ -152,3 +152,29 @@ func (s *Store) NeighborRaces(ctx context.Context, userID int64, before, after *
 	}
 	return pick(prevAll), pick(nextAll), nil
 }
+
+// RaceAggregations lists the aggregations containing the race, with their size.
+func (s *Store) RaceAggregations(ctx context.Context, raceID int64) ([]AggregationSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.user_id, a.created_at, (SELECT COUNT(*) FROM aggregation_races x WHERE x.aggregation_id = a.id)
+		FROM aggregations a JOIN aggregation_races ar ON ar.aggregation_id = a.id
+		WHERE ar.race_id = ?
+		ORDER BY a.id`, raceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AggregationSummary
+	for rows.Next() {
+		var (
+			a       AggregationSummary
+			created int64
+		)
+		if err := rows.Scan(&a.ID, &a.UserID, &created, &a.Races); err != nil {
+			return nil, err
+		}
+		a.CreatedAt = time.Unix(created, 0)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

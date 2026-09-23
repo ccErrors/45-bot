@@ -26,6 +26,9 @@ const (
 	cbAggRemove      = "arm"   // aggregation, arg race: remove it
 	cbAggRedraw      = "adraw" // aggregation: send the map again
 	cbAggDelete      = "adel"  // aggregation: delete it (races stay)
+	cbRaceDelete     = "rdel"  // race: ask to confirm deletion
+	cbRaceDeleteYes  = "rdely" // race: delete it for real
+	cbRaceSettingsIn = "sback" // race: show settings in place (cancel deletion)
 )
 
 // neighborCount is how many races before and after are offered for aggregation.
@@ -81,6 +84,9 @@ var callbackHandlers = map[string]callbackHandler{
 	cbAggRemove:      (*Bot).cbAggRemove,
 	cbAggRedraw:      (*Bot).cbAggRedraw,
 	cbAggDelete:      (*Bot).cbAggDelete,
+	cbRaceDelete:     (*Bot).cbRaceDelete,
+	cbRaceDeleteYes:  (*Bot).cbRaceDeleteYes,
+	cbRaceSettingsIn: (*Bot).cbRaceSettingsIn,
 }
 
 func (b *Bot) onCallback(ctx context.Context, q *tgbotapi.CallbackQuery) error {
@@ -195,7 +201,86 @@ func settingsView(r *storage.Race) (string, tgbotapi.InlineKeyboardMarkup) {
 		text += "🔒 приватный — виден только вам"
 		btn = tgbotapi.NewInlineKeyboardButtonData("🌐 Сделать публичным", callbackData(cbRaceVisibility, r.ID, "1"))
 	}
-	return text, tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btn))
+	return text, tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(btn),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🗑 Удалить заезд", callbackData(cbRaceDelete, r.ID, ""))),
+	)
+}
+
+func (b *Bot) cbRaceSettingsIn(ctx context.Context, c callback) (string, error) {
+	r, err := b.ownRace(ctx, c.id, c.userID)
+	if err != nil {
+		return "", err
+	}
+	text, kb := settingsView(r)
+	b.editWithKeyboard(c.chatID, c.msgID, text, kb)
+	return "", nil
+}
+
+// --- deleting a race ---
+
+func (b *Bot) cbRaceDelete(ctx context.Context, c callback) (string, error) {
+	r, err := b.ownRace(ctx, c.id, c.userID)
+	if err != nil {
+		return "", err
+	}
+	aggs, err := b.store.RaceAggregations(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
+	text, kb := b.deleteConfirmView(r, aggs)
+	b.editWithKeyboard(c.chatID, c.msgID, text, kb)
+	return "", nil
+}
+
+func (b *Bot) deleteConfirmView(r *storage.Race, aggs []storage.AggregationSummary) (string, tgbotapi.InlineKeyboardMarkup) {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🗑 Удалить заезд %s (%s)?\n\nТрек удалится безвозвратно.", raceCmd(r.ID), b.raceSpan(r))
+	if r.Active() {
+		sb.WriteString(" Заезд ещё записывается — новые точки больше сохраняться не будут.")
+	}
+	var kept, dropped []string
+	for _, a := range aggs {
+		if a.Races <= 2 {
+			dropped = append(dropped, aggCmd(a.ID))
+		} else {
+			kept = append(kept, aggCmd(a.ID))
+		}
+	}
+	if len(kept) > 0 {
+		fmt.Fprintf(&sb, "\n\nЗаезд уберётся из агрегаций: %s.", strings.Join(kept, ", "))
+	}
+	if len(dropped) > 0 {
+		fmt.Fprintf(&sb, "\n\nВ агрегациях %s останется меньше 2 заездов — они тоже удалятся (другие заезды не пострадают).", strings.Join(dropped, ", "))
+	}
+	return sb.String(), tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("✅ Да, удалить", callbackData(cbRaceDeleteYes, r.ID, "")),
+		tgbotapi.NewInlineKeyboardButtonData("↩️ Отмена", callbackData(cbRaceSettingsIn, r.ID, "")),
+	))
+}
+
+func (b *Bot) cbRaceDeleteYes(ctx context.Context, c callback) (string, error) {
+	r, err := b.ownRace(ctx, c.id, c.userID)
+	if err != nil {
+		return "", err
+	}
+	deletedAggs, err := b.store.DeleteRace(ctx, r.ID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "Заезд уже удалён", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	text := fmt.Sprintf("🗑 Заезд %s удалён.", raceCmd(r.ID))
+	if len(deletedAggs) > 0 {
+		names := make([]string, len(deletedAggs))
+		for i, id := range deletedAggs {
+			names[i] = aggCmd(id)
+		}
+		text += " Удалены агрегации: " + strings.Join(names, ", ") + "."
+	}
+	b.editText(c.chatID, c.msgID, text)
+	return "Заезд удалён", nil
 }
 
 // --- creating aggregations ---
