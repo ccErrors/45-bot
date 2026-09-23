@@ -26,7 +26,15 @@ type Race struct {
 	LiveUntil   *time.Time // nil = indefinite live period
 	FinishedAt  *time.Time // nil = still active
 	Public      bool       // visible to everyone, not only the owner
+	Source      string     // SourceLive or SourceFIT
+	Sport       string     // FIT sport name ("cycling", "running", ...); "" if unknown
+	FileSHA256  string     // for imported races: hash of the uploaded file
 }
+
+const (
+	SourceLive = "live"
+	SourceFIT  = "fit"
+)
 
 func (r *Race) Active() bool { return r.FinishedAt == nil }
 
@@ -87,6 +95,13 @@ CREATE TABLE aggregation_races (
 );
 CREATE INDEX aggregation_races_race ON aggregation_races(race_id);
 `,
+	// v4: races imported from files (.fit): source, sport and file hash for dedupe.
+	`
+ALTER TABLE races ADD COLUMN source TEXT NOT NULL DEFAULT 'live';
+ALTER TABLE races ADD COLUMN sport TEXT NOT NULL DEFAULT '';
+ALTER TABLE races ADD COLUMN file_sha256 TEXT;
+CREATE UNIQUE INDEX races_user_file ON races(user_id, file_sha256) WHERE file_sha256 IS NOT NULL;
+`,
 }
 
 func Open(path string) (*Store, error) {
@@ -137,7 +152,7 @@ func migrate(db *sql.DB) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-const raceCols = `id, user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at, public`
+const raceCols = `id, user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at, public, source, sport, file_sha256`
 
 // prefixed qualifies each column of a comma-separated list with a table alias.
 func prefixed(alias, cols string) string {
@@ -155,13 +170,15 @@ func scanRace(row scanner) (*Race, error) {
 		r                     Race
 		started, last         int64
 		liveUntil, finishedAt sql.NullInt64
+		sha                   sql.NullString
 	)
-	if err := row.Scan(&r.ID, &r.UserID, &r.ChatID, &r.MessageID, &started, &last, &liveUntil, &finishedAt, &r.Public); err != nil {
+	if err := row.Scan(&r.ID, &r.UserID, &r.ChatID, &r.MessageID, &started, &last, &liveUntil, &finishedAt, &r.Public, &r.Source, &r.Sport, &sha); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	r.FileSHA256 = sha.String
 	r.StartedAt = time.Unix(started, 0)
 	r.LastPointAt = time.Unix(last, 0)
 	if liveUntil.Valid {
@@ -184,14 +201,66 @@ func nullTime(t *time.Time) sql.NullInt64 {
 
 // CreateRace inserts a new active race and fills r.ID.
 func (s *Store) CreateRace(ctx context.Context, r *Race) error {
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO races (user_id, chat_id, message_id, started_at, last_point_at, live_until) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.UserID, r.ChatID, r.MessageID, r.StartedAt.Unix(), r.LastPointAt.Unix(), nullTime(r.LiveUntil))
+	return createRace(ctx, s.db, r)
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func createRace(ctx context.Context, db execer, r *Race) error {
+	if r.Source == "" {
+		r.Source = SourceLive
+	}
+	var sha sql.NullString
+	if r.FileSHA256 != "" {
+		sha = sql.NullString{String: r.FileSHA256, Valid: true}
+	}
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO races (user_id, chat_id, message_id, started_at, last_point_at, live_until, finished_at, public, source, sport, file_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.UserID, r.ChatID, r.MessageID, r.StartedAt.Unix(), r.LastPointAt.Unix(), nullTime(r.LiveUntil),
+		nullTime(r.FinishedAt), r.Public, r.Source, r.Sport, sha)
 	if err != nil {
 		return err
 	}
 	r.ID, err = res.LastInsertId()
 	return err
+}
+
+// ImportRace stores a finished race with all its points in one transaction.
+// If the user already imported the same file (same FileSHA256), nothing is
+// written and the existing race is returned with created=false.
+func (s *Store) ImportRace(ctx context.Context, r *Race, pts []Point) (race *Race, created bool, err error) {
+	if r.FileSHA256 != "" {
+		existing, err := scanRace(s.db.QueryRowContext(ctx,
+			`SELECT `+raceCols+` FROM races WHERE user_id = ? AND file_sha256 = ?`, r.UserID, r.FileSHA256))
+		if err == nil {
+			return existing, false, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, false, err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if err := createRace(ctx, tx, r); err != nil {
+		return nil, false, err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO points (race_id, lat, lon, ts, accuracy) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer stmt.Close()
+	for _, p := range pts {
+		if _, err := stmt.ExecContext(ctx, r.ID, p.Lat, p.Lon, p.Time.Unix(), p.Accuracy); err != nil {
+			return nil, false, err
+		}
+	}
+	return r, true, tx.Commit()
 }
 
 func (s *Store) GetRace(ctx context.Context, id int64) (*Race, error) {

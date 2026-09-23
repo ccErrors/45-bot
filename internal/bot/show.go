@@ -29,7 +29,7 @@ func (b *Bot) showRace(ctx context.Context, chatID int64, r *storage.Race, viewe
 		return nil
 	}
 	st := geo.Combine(segs)
-	caption := fmt.Sprintf("%s  %s\n%s", raceCmd(r.ID), b.raceSpan(r), summary(st))
+	caption := fmt.Sprintf("%s  %s%s\n%s", raceCmd(r.ID), sportIcon(r.Sport), b.raceSpan(r), summary(st))
 	var kb *tgbotapi.InlineKeyboardMarkup
 	if canEdit(r, viewerID) {
 		k := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
@@ -70,7 +70,7 @@ func (b *Bot) showAggregation(ctx context.Context, chatID int64, a *storage.Aggr
 			fmt.Fprintf(&sb, "…и ещё %d\n", len(races)-i)
 			break
 		}
-		fmt.Fprintf(&sb, "%s  %s\n", raceCmd(r.ID), b.raceSpan(r))
+		fmt.Fprintf(&sb, "%s  %s%s\n", raceCmd(r.ID), sportIcon(r.Sport), b.raceSpan(r))
 	}
 	sb.WriteString(summary(st))
 

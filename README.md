@@ -18,7 +18,8 @@ go run ./cmd/bot
 1. В чате с ботом: 📎 → Геопозиция → «Транслировать геопозицию».
 2. Остановите трансляцию — бот пришлёт итог заезда.
 3. `/races` — список заездов, `/race_<id>` — карта трека.
-4. Под картой: «⚙️ Настройки» (публичный/приватный) и «🔗 Агрегировать с…» — несколько заездов
+4. Или пришлите боту `.fit` файл тренировки — заезд создастся из него.
+5. Под картой: «⚙️ Настройки» (публичный/приватный) и «🔗 Агрегировать с…» — несколько заездов
    на одной карте; `/aggregations` — список агрегаций, `/agr_<id>` — карта агрегации.
 
 ## Деплой
@@ -31,6 +32,8 @@ GitHub Actions по SSH на сервер с systemd, секреты и пере
 go run ./cmd/render -csv testdata/ride.csv -o race.png        # тестовый заезд → картинка
 go run ./cmd/render -race 1a -o race.png                      # заезд из БД
 go run ./cmd/render -csv testdata/ride.csv,testdata/ride2.csv -o agg.png  # агрегация: 2 трека
+go run ./cmd/render -csv workout.fit -o race.png              # .fit с теми же проверками, что в боте
+FIT_SAMPLE=workout.fit go test ./internal/fitimport -run Sample -v  # проверить реальный файл
 go run ./cmd/render -csv testdata/ride.csv -seed-user <tg_id> # положить тестовый заезд в БД,
                                                               # потом /races в боте
 go test ./...

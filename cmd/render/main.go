@@ -4,6 +4,7 @@
 //	go run ./cmd/render -race 1a -o race.png                     # from the bot's DB
 //	go run ./cmd/render -csv testdata/ride.csv -o race.png       # lat,lon,unix_ts per line
 //	go run ./cmd/render -csv a.csv,b.csv -o agg.png              # several tracks on one map (aggregation)
+//	go run ./cmd/render -csv ride.fit -o race.png                # .fit files are accepted too
 //	go run ./cmd/render -csv testdata/ride.csv -seed-user 12345  # save as a race of Telegram user 12345
 package main
 
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ccErrors/race-bot/internal/fitimport"
 	"github.com/ccErrors/race-bot/internal/geo"
 	"github.com/ccErrors/race-bot/internal/render"
 	"github.com/ccErrors/race-bot/internal/storage"
@@ -99,12 +101,20 @@ func main() {
 		*out, b.Dx(), b.Dy(), len(tracks), points, st.DistanceM/1000, st.MinSpeedKmh, st.MaxSpeedKmh, time.Since(start).Round(time.Millisecond))
 }
 
+// readCSV reads a CSV track, or a .fit file through the same validation the bot uses.
 func readCSV(path string) ([]geo.Point, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if fitimport.IsFITName(path) {
+		act, err := fitimport.Parse(context.Background(), f, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		return act.Points, nil
+	}
 	return geo.ReadCSV(f)
 }
 

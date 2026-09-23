@@ -103,3 +103,50 @@ func TestMigrateLegacyDB(t *testing.T) {
 		t.Fatalf("user_version %d, want %d", v, len(migrations))
 	}
 }
+
+func TestImportRace(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	t0 := time.Unix(1_700_000_000, 0)
+	end := t0.Add(time.Hour)
+	newRace := func(user int64) *Race {
+		return &Race{UserID: user, ChatID: user, MessageID: 5, StartedAt: t0, LastPointAt: end,
+			FinishedAt: &end, Source: SourceFIT, Sport: "running", FileSHA256: "abc"}
+	}
+	pts := []Point{{Lat: 55, Lon: 37, Time: t0}, {Lat: 55.001, Lon: 37, Time: end}}
+
+	r, created, err := s.ImportRace(ctx, newRace(1), pts)
+	if err != nil || !created {
+		t.Fatalf("import: %v %v", created, err)
+	}
+	got, _ := s.GetRace(ctx, r.ID)
+	if got.Active() || got.Source != SourceFIT || got.Sport != "running" || got.FileSHA256 != "abc" {
+		t.Fatalf("race: %+v", got)
+	}
+	if p, _ := s.Points(ctx, r.ID); len(p) != 2 {
+		t.Fatalf("points: %d", len(p))
+	}
+
+	// Same file again from the same user: existing race, nothing new.
+	dup, created, err := s.ImportRace(ctx, newRace(1), pts)
+	if err != nil || created || dup.ID != r.ID {
+		t.Fatalf("duplicate: id %d created %v err %v", dup.ID, created, err)
+	}
+	// Same file from another user is a separate race.
+	other := newRace(2)
+	other.ChatID = 2
+	if _, created, err := s.ImportRace(ctx, other, pts); err != nil || !created {
+		t.Fatalf("other user: %v %v", created, err)
+	}
+	// Live races default to source "live".
+	live := &Race{UserID: 1, ChatID: 1, MessageID: 6, StartedAt: t0, LastPointAt: t0}
+	s.CreateRace(ctx, live)
+	if got, _ := s.GetRace(ctx, live.ID); got.Source != SourceLive || !got.Active() {
+		t.Fatalf("live race: %+v", got)
+	}
+}

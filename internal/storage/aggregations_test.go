@@ -57,7 +57,10 @@ func TestAggregations(t *testing.T) {
 	if err := s.AddAggregationRace(ctx, aggID, races[0].ID); err != nil { // duplicate is a no-op
 		t.Fatal(err)
 	}
-	got, _ := s.AggregationRaces(ctx, aggID)
+	got, err := s.AggregationRaces(ctx, aggID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ids(got) != "1,3,4" {
 		t.Fatalf("members: %s", ids(got))
 	}

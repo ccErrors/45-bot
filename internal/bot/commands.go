@@ -50,6 +50,8 @@ const helpText = `Я записываю велозаезды 🚴
 2. Катайтесь — я сохраняю точки трека.
 3. Остановите трансляцию — заезд завершится.
 
+Или просто пришлите .fit файл тренировки с часов или велокомпьютера — я создам заезд из него.
+
 /races — список ваших заездов
 /race_<id> — карта заезда с треком
 /aggregations — агрегации: несколько заездов на одной карте
@@ -73,7 +75,7 @@ func (b *Bot) cmdRaces(ctx context.Context, m *tgbotapi.Message) error {
 		if r.Public {
 			mark = "  🌐"
 		}
-		fmt.Fprintf(&sb, "%s  %s%s\n", raceCmd(r.ID), b.raceSpan(r), mark)
+		fmt.Fprintf(&sb, "%s  %s%s%s\n", raceCmd(r.ID), sportIcon(r.Sport), b.raceSpan(r), mark)
 	}
 	b.reply(m.Chat.ID, sb.String())
 	return nil

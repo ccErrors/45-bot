@@ -73,6 +73,13 @@ func (b *Bot) handle(ctx context.Context, upd tgbotapi.Update) {
 				log.Printf("callback %q: %v", q.Data, err)
 			}
 		}(upd.CallbackQuery)
+	case upd.Message != nil && upd.Message.Document != nil:
+		go func(m *tgbotapi.Message) {
+			if err := b.onDocument(ctx, m); err != nil {
+				log.Printf("document from %d: %v", m.Chat.ID, err)
+				b.reply(m.Chat.ID, "Не получилось загрузить файл, попробуйте позже.")
+			}
+		}(upd.Message)
 	case upd.Message != nil && upd.Message.IsCommand():
 		// Rendering can take a while; don't block location updates of other users.
 		go func(m *tgbotapi.Message) {

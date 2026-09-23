@@ -5,3 +5,5 @@ data/
 race-bot-deploy
 race-bot-deploy.pub
 known_hosts
+# personal workouts — never commit (tests generate FIT files in memory)
+*.fit
