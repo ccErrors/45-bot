@@ -21,6 +21,8 @@ go run ./cmd/bot
 4. Или пришлите боту `.fit` файл тренировки — заезд создастся из него.
 5. Под картой: «⚙️ Настройки» (публичный/приватный) и «🔗 Агрегировать с…» — несколько заездов
    на одной карте; `/aggregations` — список агрегаций, `/agr_<id>` — карта агрегации.
+6. `/heatmap` — тепловая карта: заезды, сгруппированные по местам, где треки проходят ближе 1 км
+   друг к другу; `/heat_<id>` — карта зоны (фото + файл в двойном разрешении).
 
 ## Деплой
 
@@ -32,6 +34,7 @@ GitHub Actions по SSH на сервер с systemd, секреты и пере
 go run ./cmd/render -csv testdata/ride.csv -o race.png        # тестовый заезд → картинка
 go run ./cmd/render -race 1a -o race.png                      # заезд из БД
 go run ./cmd/render -csv testdata/ride.csv,testdata/ride2.csv -o agg.png  # агрегация: 2 трека
+go run ./cmd/render -csv testdata/ride.csv,testdata/ride2.csv -heatmap -o heat.jpg  # тепловая карта
 go run ./cmd/render -csv workout.fit -o race.png              # .fit с теми же проверками, что в боте
 FIT_SAMPLE=workout.fit go test ./internal/fitimport -run Sample -v  # проверить реальный файл
 go run ./cmd/render -csv testdata/ride.csv -seed-user <tg_id> # положить тестовый заезд в БД,

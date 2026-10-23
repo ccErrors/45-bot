@@ -51,6 +51,19 @@ func TestRaceLifecycle(t *testing.T) {
 	if other, _ := s.ListRaces(ctx, 8, 10); len(other) != 0 {
 		t.Fatal("other user sees races")
 	}
+
+	// UserRaces: all of the user's races, oldest first, nobody else's.
+	older := &Race{UserID: 7, ChatID: 7, MessageID: 43, StartedAt: t0.Add(-time.Hour), LastPointAt: t0}
+	stranger := &Race{UserID: 8, ChatID: 8, MessageID: 44, StartedAt: t0, LastPointAt: t0}
+	for _, x := range []*Race{older, stranger} {
+		if err := s.CreateRace(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.UserRaces(ctx, 7)
+	if err != nil || len(all) != 2 || all[0].ID != older.ID || all[1].ID != r.ID {
+		t.Fatalf("user races: %+v %v", all, err)
+	}
 }
 
 // A database created before schema versioning (user_version 0, no public column)

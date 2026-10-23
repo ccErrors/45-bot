@@ -53,3 +53,40 @@ func TestRenderRide(t *testing.T) {
 		}
 	}
 }
+
+// The heatmap shows the same area as a race map at twice the resolution.
+func TestRenderHeatmapDoubleResolution(t *testing.T) {
+	var tracks [][]geo.Segment
+	for _, name := range []string{"ride.csv", "ride2.csv"} {
+		f, err := os.Open("../../testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pts, err := geo.ReadCSV(f)
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		segs, _ := geo.Analyze(pts, 120)
+		tracks = append(tracks, segs)
+	}
+	st := geo.Combine(tracks...)
+	race, err := Render(context.Background(), flatTiles{}, tracks, st, DefaultFrameOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heat, err := RenderHeatmap(context.Background(), flatTiles{}, tracks, st, HeatmapFrameOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, hb := race.Bounds(), heat.Bounds()
+	// ±1 px: each side is rounded up separately.
+	if abs(hb.Dx()-2*rb.Dx()) > 1 || abs(hb.Dy()-2*rb.Dy()) > 1 {
+		t.Fatalf("heatmap %v, race map %v: want twice the size", hb, rb)
+	}
+	if hb.Dx() > 4000 || hb.Dy() > 4000 {
+		t.Fatalf("heatmap too big: %v", hb)
+	}
+}
+
+func abs(x int) int { return max(x, -x) }

@@ -35,6 +35,8 @@ func (b *Bot) showRace(ctx context.Context, chatID int64, r *storage.Race, viewe
 		k := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⚙️ Настройки", callbackData(cbRaceSettings, r.ID, "")),
 			tgbotapi.NewInlineKeyboardButtonData("🔗 Агрегировать с…", callbackData(cbRaceAggregate, r.ID, "")),
+		), tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔥 Тепловая карта", callbackData(cbRaceHeatmap, r.ID, "")),
 		))
 		kb = &k
 	}

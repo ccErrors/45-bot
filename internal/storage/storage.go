@@ -295,6 +295,12 @@ func (s *Store) ListRaces(ctx context.Context, userID int64, limit int) ([]*Race
 		`SELECT `+raceCols+` FROM races WHERE user_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`, userID, limit)
 }
 
+// UserRaces returns all of the user's races, oldest first (for heatmaps).
+func (s *Store) UserRaces(ctx context.Context, userID int64) ([]*Race, error) {
+	return s.queryRaces(ctx,
+		`SELECT `+raceCols+` FROM races WHERE user_id = ? ORDER BY started_at, id`, userID)
+}
+
 func (s *Store) ActiveRaces(ctx context.Context) ([]*Race, error) {
 	return s.queryRaces(ctx, `SELECT `+raceCols+` FROM races WHERE finished_at IS NULL`)
 }
