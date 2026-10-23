@@ -34,6 +34,10 @@ type FrameOptions struct {
 
 var DefaultFrameOptions = FrameOptions{MaxSide: 2000, MinSide: 400, MaxZoom: 18, Fill: 0.8}
 
+// HeatmapFrameOptions doubles the resolution of DefaultFrameOptions: the same
+// area at one zoom level more, so street-level detail survives in a big zone.
+var HeatmapFrameOptions = FrameOptions{MaxSide: 4000, MinSide: 800, MaxZoom: 18, Fill: 0.8}
+
 // ComputeFrame picks the highest zoom at which the track, scaled so it takes
 // opt.Fill of the image, fits into opt.MaxSide, and centers the image on the
 // center of the track's bounding box.

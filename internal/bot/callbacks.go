@@ -29,6 +29,7 @@ const (
 	cbRaceDelete     = "rdel"  // race: ask to confirm deletion
 	cbRaceDeleteYes  = "rdely" // race: delete it for real
 	cbRaceSettingsIn = "sback" // race: show settings in place (cancel deletion)
+	cbRaceHeatmap    = "heat"  // race: send the heatmap of its zone
 )
 
 // neighborCount is how many races before and after are offered for aggregation.
@@ -87,6 +88,7 @@ var callbackHandlers = map[string]callbackHandler{
 	cbRaceDelete:     (*Bot).cbRaceDelete,
 	cbRaceDeleteYes:  (*Bot).cbRaceDeleteYes,
 	cbRaceSettingsIn: (*Bot).cbRaceSettingsIn,
+	cbRaceHeatmap:    (*Bot).cbRaceHeatmap,
 }
 
 func (b *Bot) onCallback(ctx context.Context, q *tgbotapi.CallbackQuery) error {

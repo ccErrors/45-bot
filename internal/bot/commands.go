@@ -18,6 +18,7 @@ const aggregationsListLimit = 50
 var menuCommands = []tgbotapi.BotCommand{
 	{Command: "races", Description: "Мои заезды"},
 	{Command: "aggregations", Description: "Мои агрегации заездов"},
+	{Command: "heatmap", Description: "Тепловая карта моих заездов"},
 	{Command: "help", Description: "Как записать заезд"},
 }
 
@@ -38,6 +39,10 @@ func (b *Bot) onCommand(ctx context.Context, m *tgbotapi.Message) error {
 		return b.cmdAggregations(ctx, m)
 	case strings.HasPrefix(cmd, "agr_"):
 		return b.cmdAggregation(ctx, m, strings.TrimPrefix(cmd, "agr_"))
+	case cmd == "heatmap" || cmd == "heatmaps":
+		return b.cmdHeatmaps(ctx, m)
+	case strings.HasPrefix(cmd, "heat_"):
+		return b.cmdHeatmap(ctx, m, strings.TrimPrefix(cmd, "heat_"))
 	default:
 		b.reply(m.Chat.ID, "Не знаю такой команды. /help")
 		return nil
@@ -55,10 +60,12 @@ const helpText = `Я записываю велозаезды 🚴
 /races — список ваших заездов
 /race_<id> — карта заезда с треком
 /aggregations — агрегации: несколько заездов на одной карте
+/heatmap — тепловая карта: все ваши заезды по местам, где они пересекаются
 
 Под картой заезда есть кнопки:
 ⚙️ Настройки — сделать заезд публичным (его сможет открыть любой по /race_<id>) или приватным.
-🔗 Агрегировать с… — объединить с соседним заездом на одной карте.`
+🔗 Агрегировать с… — объединить с соседним заездом на одной карте.
+🔥 Тепловая карта — все ваши заезды в этом месте.`
 
 func (b *Bot) cmdRaces(ctx context.Context, m *tgbotapi.Message) error {
 	races, err := b.store.ListRaces(ctx, m.From.ID, racesListLimit)

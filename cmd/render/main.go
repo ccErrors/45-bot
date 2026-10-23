@@ -5,6 +5,7 @@
 //	go run ./cmd/render -csv testdata/ride.csv -o race.png       # lat,lon,unix_ts per line
 //	go run ./cmd/render -csv a.csv,b.csv -o agg.png              # several tracks on one map (aggregation)
 //	go run ./cmd/render -csv ride.fit -o race.png                # .fit files are accepted too
+//	go run ./cmd/render -csv a.csv,b.csv,c.csv -heatmap -o heat.jpg  # heatmap of the first track's zone
 //	go run ./cmd/render -csv testdata/ride.csv -seed-user 12345  # save as a race of Telegram user 12345
 package main
 
@@ -12,6 +13,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image/jpeg"
 	"image/png"
 	"log"
 	"os"
@@ -30,9 +32,10 @@ func main() {
 	raceHex := flag.String("race", "", "race id (hex) to render from the database")
 	csvPath := flag.String("csv", "", "CSV track file(s), comma-separated: lat,lon,unix_ts")
 	seedUser := flag.Int64("seed-user", 0, "with -csv: store the track as a finished race of this Telegram user id and exit")
-	out := flag.String("o", "race.png", "output PNG file")
+	out := flag.String("o", "race.png", "output image file: PNG, or JPEG if it ends in .jpg")
 	cacheDir := flag.String("tiles", "data/tiles", "tile cache dir")
 	maxSpeed := flag.Float64("max-speed", 120, "glitch speed threshold, km/h")
+	heatmap := flag.Bool("heatmap", false, "render the heatmap zone of the first track (tracks within 1 km of each other)")
 	flag.Parse()
 
 	var tracks [][]geo.Point
@@ -79,10 +82,24 @@ func main() {
 		segs = append(segs, s)
 		points += len(pts)
 	}
+	draw, frame := render.Render, render.DefaultFrameOptions
+	if *heatmap {
+		zones := geo.Zones(segs, geo.ZoneRadiusM)
+		if len(zones) == 0 {
+			log.Fatal("no tracks with segments")
+		}
+		fmt.Printf("zones (track indexes): %v\n", zones)
+		var zoneSegs [][]geo.Segment
+		for _, i := range zones[0] {
+			zoneSegs = append(zoneSegs, segs[i])
+		}
+		segs = zoneSegs
+		draw, frame = render.RenderHeatmap, render.HeatmapFrameOptions
+	}
 	st := geo.Combine(segs...)
 	tiles := render.NewHTTPTiles("https://tile.openstreetmap.org/{z}/{x}/{y}.png", "race-bot/1.0 (render cli)", *cacheDir)
 	start := time.Now()
-	img, err := render.Render(context.Background(), tiles, segs, st, render.DefaultFrameOptions)
+	img, err := draw(context.Background(), tiles, segs, st, frame)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -90,7 +107,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := png.Encode(f, img); err != nil {
+	if strings.HasSuffix(*out, ".jpg") || strings.HasSuffix(*out, ".jpeg") {
+		err = jpeg.Encode(f, img, &jpeg.Options{Quality: 90})
+	} else {
+		err = png.Encode(f, img)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -98,7 +120,7 @@ func main() {
 	}
 	b := img.Bounds()
 	fmt.Printf("%s: %dx%d, %d track(s), %d points, %.2f km, %.1f..%.1f km/h, rendered in %s\n",
-		*out, b.Dx(), b.Dy(), len(tracks), points, st.DistanceM/1000, st.MinSpeedKmh, st.MaxSpeedKmh, time.Since(start).Round(time.Millisecond))
+		*out, b.Dx(), b.Dy(), len(segs), points, st.DistanceM/1000, st.MinSpeedKmh, st.MaxSpeedKmh, time.Since(start).Round(time.Millisecond))
 }
 
 // readCSV reads a CSV track, or a .fit file through the same validation the bot uses.

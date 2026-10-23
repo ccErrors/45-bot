@@ -64,10 +64,34 @@ func hsv(h, s, v float64) color.RGBA {
 	return color.RGBA{uint8((r + m) * 255), uint8((g + m) * 255), uint8((b + m) * 255), 255}
 }
 
+// lineStyle is how tracks are drawn: bold for one race or an aggregation,
+// thin for a heatmap where dozens of tracks overlap.
+type lineStyle struct {
+	minWidth, widthDiv float64 // line width = max(minWidth, image side / widthDiv)
+	haloAlpha          float64
+	markers            bool // start/finish circles
+}
+
+var (
+	raceLines    = lineStyle{minWidth: 3, widthDiv: 300, haloAlpha: 0.55, markers: true}
+	heatmapLines = lineStyle{minWidth: 1.5, widthDiv: 1600, haloAlpha: 0.35}
+)
+
 // Render draws one or more tracks (segments as returned by geo.Analyze) on a
 // single map. st must cover all tracks (geo.Combine): it sets the shared color
 // scale and the numbers in the stats panel. Empty tracks are skipped.
 func Render(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st geo.Stats, opt FrameOptions) (image.Image, error) {
+	return render(ctx, tiles, tracks, st, opt, raceLines)
+}
+
+// RenderHeatmap draws a heatmap zone: all of a user's tracks in one area,
+// colored by speed like Render, but with thin lines so overlapping rides stay
+// visible, and without start/finish markers. Use HeatmapFrameOptions.
+func RenderHeatmap(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st geo.Stats, opt FrameOptions) (image.Image, error) {
+	return render(ctx, tiles, tracks, st, opt, heatmapLines)
+}
+
+func render(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st geo.Stats, opt FrameOptions, ls lineStyle) (image.Image, error) {
 	var (
 		pts      []geo.Point
 		nonEmpty [][]geo.Segment
@@ -95,15 +119,17 @@ func Render(ctx context.Context, tiles TileSource, tracks [][]geo.Segment, st ge
 	}
 
 	big := float64(max(f.Width, f.Height))
-	lineW := math.Max(3, big/300)
+	lineW := math.Max(ls.minWidth, big/ls.widthDiv)
 	for _, segs := range nonEmpty {
-		drawHalo(dc, f, segs, lineW)
+		drawHalo(dc, f, segs, lineW, ls.haloAlpha)
 	}
 	for _, segs := range nonEmpty {
 		drawTrack(dc, f, segs, st, lineW)
 	}
-	for _, segs := range nonEmpty {
-		drawMarkers(dc, f, segs[0].From, segs[len(segs)-1].To, lineW)
+	if ls.markers {
+		for _, segs := range nonEmpty {
+			drawMarkers(dc, f, segs[0].From, segs[len(segs)-1].To, lineW)
+		}
 	}
 
 	fontSize := math.Max(14, big/60)
@@ -166,7 +192,7 @@ func drawTiles(ctx context.Context, dc *gg.Context, tiles TileSource, f Frame) e
 
 // drawHalo draws a dark outline under a track so light colors stay visible on the map.
 // Halos of all tracks go first, so overlapping tracks don't cover each other's colors.
-func drawHalo(dc *gg.Context, f Frame, segs []geo.Segment, lineW float64) {
+func drawHalo(dc *gg.Context, f Frame, segs []geo.Segment, lineW, alpha float64) {
 	dc.SetLineCapRound()
 	dc.SetLineJoinRound()
 	for _, s := range segs {
@@ -174,7 +200,7 @@ func drawHalo(dc *gg.Context, f Frame, segs []geo.Segment, lineW float64) {
 		x2, y2 := f.Project(s.To.Lat, s.To.Lon)
 		dc.DrawLine(x1, y1, x2, y2)
 	}
-	dc.SetRGBA(0, 0, 0, 0.55)
+	dc.SetRGBA(0, 0, 0, alpha)
 	dc.SetLineWidth(lineW + math.Max(2, lineW*0.6))
 	dc.Stroke()
 }
